@@ -11,6 +11,7 @@ using ProgressMeter
 using LinearAlgebra
 using UMAP
 using Distances
+using Distributions: Normal
 using InlineStrings
 using Clustering
 using CSV
@@ -217,132 +218,134 @@ end
 
 proj_l = x -> issparse(x) ? SparseMatrixCSC{Float32,UInt32}(spdiagm(1 ./sum(x,dims=2)[:])) * x : x ./ sum(x,dims=2)
 norm_l = x -> issparse(x) ? SparseMatrixCSC{Float32,UInt32}(spdiagm(mean(sqrt.(sum(x.^2,dims=2)[:])) ./ sqrt.(sum(x.^2,dims=2)[:]))) * x : x ./ sqrt.(sum(x.^2,dims=2)) * mean(sqrt.(sum(x.^2,dims=2)))
-function scLENS(inp_df;device_="gpu",th=60,l_inp=nothing,obs_pt="mean",p_step=0.001)
-   logn_scale = x -> norm_l(scaled_gdata(log1p.(proj_l(x)),position_=obs_pt))
-   if occursin(r"^ENSG.",names(inp_df)[3])
-      tmp_gname = [s in keys(dict_es2gn) ? dict_es2gn[s] : "unknown" for s in names(inp_df)[2:end]]
+function scLENS(inp_df;device_="gpu",th=60,l_inp=nothing,p_step=0.001,return_scaled=false,obs_pt = "mean")
+   pre_scale = x -> log1p.(proj_l(x))
+   logn_scale = if obs_pt=="median"
+      x -> issparse(x) ? norm_l(scaled_gdata(Matrix{Float32}(x),position_="median")) : norm_l(scaled_gdata(x,position_="median"))
+   elseif obs_pt=="mean"
+      x -> issparse(x) ? scaled_gdata(norm_l(scaled_gdata(Matrix{Float32}(x),position_="mean")),position_="cent") : scaled_gdata(norm_l(scaled_gdata(x,position_="mean")),position_="cent")
    else
-      tmp_gname = names(inp_df)[2:end]
+      println("warning: wrong centering input, continue using mean centering")
+      x -> issparse(x) ? scaled_gdata(norm_l(scaled_gdata(Matrix{Float32}(x),position_="mean")),position_="cent") : scaled_gdata(norm_l(scaled_gdata(x,position_="mean")),position_="cent")
    end
-       
+
+   if occursin(r"^ENSG.",names(inp_df)[3])
+       tmp_gname = [s in keys(dict_es2gn) ? dict_es2gn[s] : "unknown" for s in names(inp_df)[2:end]]
+   else
+       tmp_gname = names(inp_df)[2:end]
+   end
+   
    println("Extracting matrices")
    X_ = df2sparr(inp_df)
-   X_r = df2sparr(random_nz(inp_df,rmix=true))
    
    nz_row, nz_col, nz_val = findnz(X_)
-   nzero_idx = sparse(nz_row,nz_col,ones(Bool,length(nz_row)))
-   
-   zero_idx = .!nzero_idx
-   dropzeros!(zero_idx)
-   z_idx1,z_idx2,_ = findnz(zero_idx)
-   
-   sparsity_(zero_idx)
+   nzero_idx = sparse(nz_row,nz_col,ones(Float32,length(nz_row)))
+   z_idx1,z_idx2,_ = findnz(iszero.(nzero_idx))
    N,M = size(X_)
-   scaled_X = logn_scale(X_)
-   # Xr = logn_scale(X_r)
-
+   scaled_X = logn_scale(pre_scale(X_))
+   
+   X_r = df2sparr(random_nz(inp_df,rmix=true))
    println("Extracting Signals...")
    GC.gc()
-   nL, nV, L, L_mp, lambda_c, _ = get_sigev(scaled_X,logn_scale(X_r),device=device_)
-   nz_row_r, nz_col_r, _ = findnz(X_r)
+   nL, nV, L, L_mp, lambda_c, _, noiseV = get_sigev(scaled_X,logn_scale(pre_scale(X_r)),device=device_)
+   # nz_row_r, nz_col_r, _ = findnz(X_r)
 
    mpC_ = mp_check(L_mp)
+   # mpC_[:plot]
 
    println("Calculating noise baseline...")
-   Vr2 = try
-      GC.gc()
-      get_sigev(logn_scale(nzero_idx),logn_scale(sparse(nz_row_r,nz_col_r,ones(Bool,length(nz_row_r)))),device=device_)[end]
-   catch
-      println("Warning: scLENS found no signal from the binary data")
-      get_eigvec(logn_scale(sparse(nz_row_r,nz_col_r,ones(Bool,length(nz_row_r)))))[end]
-   end
-   mean_cor = Array{Float32,1}([])
 
-   pp_ = sparsity_(X_)
-   # GC.gc()
-   d_arr0 = begin
-      GC.gc()
-      tM1_v = get_eigvec(SparseMatrixCSC{Float32,UInt32}(sprand(Bool, N,M, 1-pp_)),device=device_)[2]
-      GC.gc()
-      tM2_v = get_eigvec(SparseMatrixCSC{Float32,UInt32}(sprand(Bool, N,M, 1-pp_)),device=device_)[2]
-      try
-         maximum(abs.(corr_mat(tM1_v,tM2_v,device=device_)),dims=2)[:]
-      catch
-         maximum(abs.(corr_mat(tM1_v,tM2_v,device="cpu")),dims=2)[:]
-      end
-   end
-   
-   p_th = mean(d_arr0[2:end])
-   # p_th = median(d_arr0)
+   nm = min(N,M)
+   p_th = mean(maximum(abs.(rand(Normal(0,sqrt(1/nm) ),nm,100)),dims=1))
    println("spth_: $p_th")
    
    p_ = 0.999
+   mean_cor = Array{Float32,1}([])
    println("Calculating sparsity level for the perturbation...")
+   Vr2 = if N > M 
+       get_eigvec(logn_scale(pre_scale(nzero_idx))')[end]
+   else
+       get_eigvec(logn_scale(pre_scale(nzero_idx)))[end]
+   end
+   n_2 = round(Int,lastindex(Vr2,2)/2)
    while true
-      sple_idx = sample(UInt32(1):UInt32(lastindex(z_idx1)),Int(round((1-p_)*M*N)),replace=false)
-      tmp_X = sparse(vcat(nz_row,z_idx1[sple_idx]),vcat(nz_col,z_idx2[sple_idx]),true,N,M)
-      GC.gc()
-      _, nV_2 = get_eigvec(logn_scale(tmp_X),device=device_)
-
-      d_arr = try
-         nanmaximum(abs.(corr_mat(Vr2,nV_2[:,length(nL):end],device=device_)),dims=2)[:]
-      catch
-         nanmaximum(abs.(corr_mat(Vr2,nV_2[:,length(nL):end],device="cpu")),dims=2)[:]
-      end
+       sple_idx = sample(UInt32(1):UInt32(lastindex(z_idx1)),Int(round((1-p_)*M*N)),replace=false)
+       GC.gc()
+       nV_2 = if N > M
+           get_eigvec(logn_scale(pre_scale(
+               sparse(vcat(nz_row,z_idx1[sple_idx]),vcat(nz_col,z_idx2[sple_idx]),ones(Float32,length(nz_col)+length(sple_idx)),N,M)))',device=device_)[end]
+       else
+           get_eigvec(logn_scale(pre_scale(
+               sparse(vcat(nz_row,z_idx1[sple_idx]),vcat(nz_col,z_idx2[sple_idx]),ones(Float32,length(nz_col)+length(sple_idx)),N,M))),device=device_)[end]
+       end
+       
+       d_arr = try
+           nanmaximum(abs.(corr_mat(Vr2[:,:],nV_2[:,end-n_2:end],device=device_)),dims=1)[:]
+       catch
+           nanmaximum(abs.(corr_mat(Vr2,nV_2[:,end-n_2:end],device="cpu")),dims=1)[:]
+       end
+       
+       ppj_ = nanminimum(d_arr)
+       if (ppj_ < p_th) | (p_ < 0.9)
+           break
+       end
       
-      ppj_ = nanminimum(d_arr)
-      if (ppj_ < p_th) | (p_ < 0.9)
-         break
-      end
-      
-      p_ -= p_step
-      println(ppj_)
-      push!(mean_cor,ppj_)
+       p_ -= p_step
+       println(ppj_)
+       push!(mean_cor,ppj_)
    end
    println("Selected perturb sparisty: $p_")
    
    Vr2 = nothing
-   zero_idx = nothing
    nzero_idx = nothing
 
    nV_set = []
    nL_set = []
    min_s = size(nV,2)
    @showprogress "perturbing..." for _ in 1:10
-      sple_idx = sample(UInt32(1):UInt32(lastindex(z_idx1)),Int(round((1-p_)*M*N)),replace=false)
-      tmp_X = sparse(vcat(nz_row,z_idx1[sple_idx]),vcat(nz_col,z_idx2[sple_idx]),vcat(nz_val,ones(Float32,lastindex(sple_idx))),N,M)
-      GC.gc()
-      tmp_nL,tmp_nV = get_eigvec(logn_scale(tmp_X),device=device_)
-      push!(nV_set, tmp_nV[:,1:min(min_s*3,N)])
-      push!(nL_set, tmp_nL[1:min(min_s*3,N)])
+       sple_idx = sample(UInt32(1):UInt32(lastindex(z_idx1)),Int(round((1-p_)*M*N)),replace=false)
+       GC.gc()
+       tmp_X = sparse(vcat(nz_row,z_idx1[sple_idx]),vcat(nz_col,z_idx2[sple_idx]),vcat(nz_val,ones(Float32,lastindex(sple_idx))),N,M)
+       tmp_nL,tmp_nV = get_eigvec(logn_scale(pre_scale(tmp_X)),device=device_)
+       push!(nV_set, tmp_nV[:,1:min(min_s*3,N)])
+       push!(nL_set, tmp_nL[1:min(min_s*3,N)])
    end
 
    if iszero(min_s)
-      println("warning: There is no signal")
-      results = Dict(:L => L, :L_mp => L_mp,
-      :λ => lambda_c, :cell_id => string.(inp_df.cell))
-      return results
+       println("warning: There is no signal")
+       results = Dict(:L => L, :L_mp => L_mp,
+       :λ => lambda_c, :cell_id => string.(inp_df.cell))
+       return results
    else
-      println("Finding robust signals...")
-      a_ = hcat([maximum(abs.(nV'*j[:,1:min_s]),dims=2) for j in nV_set]...)
-      th_ = cos(deg2rad(th))
-      m_score = mean(a_,dims=2)[:]
-      sig_id = findall(m_score .> th_)
-      sd_score = std(a_,dims=2)[:]
+       println("Finding robust signals...")
+       a_ = hcat([maximum(abs.(nV'*j[:,1:min_s]),dims=2) for j in nV_set]...)
+       th_ = cos(deg2rad(th))
+       m_score = mean(a_,dims=2)[:]
+       sig_id = findall(m_score .> th_)
+       sd_score = std(a_,dims=2)[:]
+   
+       println("Reconstructing reduced data...")
+       Xout0 = nV.*(sqrt.(nL))'
+       Xout1 = nV[:,sig_id].*sqrt.(nL[sig_id])'
+       df_X0 = DataFrame(Xout0,:auto)
+       insertcols!(df_X0,1,:cell => inp_df.cell)
+       df_X1 = DataFrame(Xout1,:auto)
+       insertcols!(df_X1,1,:cell => inp_df.cell)
+   
 
-      println("Reconstructing reduced data...")
-      Xout0 = nV.*(sqrt.(nL))'
-      Xout1 = nV[:,sig_id].*sqrt.(nL[sig_id])'
-      df_X0 = DataFrame(Xout0,:auto)
-      insertcols!(df_X0,1,:cell => inp_df.cell)
-      df_X1 = DataFrame(Xout1,:auto)
-      insertcols!(df_X1,1,:cell => inp_df.cell)
-
-      results = Dict(:pca => df_X0,:pca_n1 => df_X1, :sig_id=>sig_id, :L => L, :L_mp => L_mp,
-      :λ => lambda_c, :st_mat => a_,:m_scores=>m_score, :sd_scores=>sd_score, :signal_evec => nV, :signal_ev =>nL,
-      :cell_id => l_inp,:ppj => mean_cor, :scaled_X => scaled_X,
-      :ks_static => mpC_[:ks_static], :pass => mpC_[:pass])
-      return results
+       results = if return_scaled
+           Dict(:pca => df_X0,:pca_n1 => df_X1, :sig_id=>sig_id, :L => L, :L_mp => L_mp,
+       :λ => lambda_c, :st_mat => a_,:m_scores=>m_score, :sd_scores=>sd_score, :signal_evec => nV, :signal_ev =>nL,
+       :cell_id => l_inp,:ppj => mean_cor, :scaled_X => scaled_X,
+       :ks_static => mpC_[:ks_static], :pass => mpC_[:pass])
+       else
+           Dict(:pca => df_X0,:pca_n1 => df_X1, :sig_id=>sig_id, :L => L, :L_mp => L_mp,
+       :λ => lambda_c, :st_mat => a_,:m_scores=>m_score, :sd_scores=>sd_score, :signal_evec => nV, :signal_ev =>nL,
+       :cell_id => l_inp,:ppj => mean_cor,
+       :ks_static => mpC_[:ks_static], :pass => mpC_[:pass])
+       end
+       
+       return results
    end
 end
 
@@ -613,32 +616,44 @@ end
 
 function scaled_gdata(X;dim=1, position_="mean")
    tmp_mean = if position_ == "mean"
-      mean(X,dims=dim)
+       mean(X,dims=dim)
    elseif position_ == "median"
-      if issparse(X)
-         mapslices(x -> nnz(x) > length(x)/2 ? median(x) : 0.0, X,dims=dim)
-      else
-         mapslices(median, X,dims=dim)
-      end
-   else
-      mean(X,dims=dim)
+       if issparse(X)
+           mapslices(x -> nnz(x) > length(x)/2 ? median(x) : Float32(0.0), X,dims=dim)
+       else
+           mapslices(median, X,dims=dim)
+       end
+   elseif position_ == "cent"
+       mean(X,dims=dim)
+   elseif position_ == "scaling"
+       nothing
    end
-   tmp_std = std(X,dims=dim)
 
-   if issparse(X) && (position_ == "median")
-      new_nz = zeros(length(X.nzval))
-      for i = 1:lastindex(X,2)
-         sub_ii = X.colptr[i]:X.colptr[i+1]-1
-         new_nz[sub_ii] = (X.nzval[sub_ii] .- tmp_mean[i]) ./ (tmp_std[i])
-         X[:,i].nzind
-      end
-      new_X = copy(X)
-      new_X.nzval .= new_nz
-
-      nz_a = SparseMatrixCSC{Float32,UInt32}(- tmp_mean ./ tmp_std) .* iszero.(new_X)
-      return new_X + nz_a
+   if position_ == "cent"
+       return @. (X - tmp_mean)
    else
-      return @. (X - tmp_mean) / (tmp_std)
+       tmp_std = std(X,dims=dim)
+       if isnothing(tmp_mean)
+           if dim == 1
+               return X./tmp_std
+           elseif dim == 2
+               return tmp_std./X
+           end
+       elseif issparse(X) && (position_ == "median")
+           new_nz = zeros(length(X.nzval))
+           for i = 1:lastindex(X,2)
+               sub_ii = X.colptr[i]:X.colptr[i+1]-1
+               new_nz[sub_ii] = (X.nzval[sub_ii] .- tmp_mean[i]) ./ (tmp_std[i])
+               X[:,i].nzind
+           end
+           new_X = copy(X)
+           new_X.nzval .= new_nz
+
+           nz_a = sparse(- tmp_mean ./ tmp_std) .* iszero.(new_X)
+           return new_X + nz_a
+       else
+           return @. (X - tmp_mean) / (tmp_std)
+       end
    end
 end
 
@@ -859,10 +874,14 @@ function main()
    # dev_ = "gpu"
    scaling_m = parsed_args["scaling"]
    # scaling_m = "mean"
-   out_ours = try
-      scLENS(pre_df,device_=dev_,th=60,l_inp=l_true,obs_pt=scaling_m)
-   catch
-      println("warning: it is unable to use gpu")
+   out_ours = if dev_ == "gpu"
+      try
+         scLENS(pre_df,device_=dev_,th=60,l_inp=l_true,obs_pt=scaling_m)
+      catch
+         println("warning: it is unable to use gpu")
+         scLENS(pre_df,device_="cpu",th=60,l_inp=l_true,obs_pt=scaling_m)
+      end
+   else
       scLENS(pre_df,device_="cpu",th=60,l_inp=l_true,obs_pt=scaling_m)
    end
    
