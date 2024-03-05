@@ -35,7 +35,6 @@ function main()
     end
 
     p_dir = parsed_args["arg1"]
-    # p_dir = raw"C:\Users\kimma\Downloads\CytAssist_FreshFrozen_Mouse_Brain_Post_Xenium_Rep1_filtered_feature_bc_matrix\filtered_feature_bc_matrix"
     o_dir = parsed_args["out_dir"]
     # o_dir = tempname()
     f_name = parsed_args["out_name"]
