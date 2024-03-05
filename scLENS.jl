@@ -218,7 +218,7 @@ end
 
 proj_l = x -> issparse(x) ? SparseMatrixCSC{Float32,UInt32}(spdiagm(1 ./sum(x,dims=2)[:])) * x : x ./ sum(x,dims=2)
 norm_l = x -> issparse(x) ? SparseMatrixCSC{Float32,UInt32}(spdiagm(mean(sqrt.(sum(x.^2,dims=2)[:])) ./ sqrt.(sum(x.^2,dims=2)[:]))) * x : x ./ sqrt.(sum(x.^2,dims=2)) * mean(sqrt.(sum(x.^2,dims=2)))
-function scLENS(inp_df;device_="gpu",th=60,l_inp=nothing,p_step=0.001,return_scaled=false,obs_pt = "mean")
+function scLENS(inp_df;device_="gpu",th=60,l_inp=nothing,p_step=0.001,return_scaled=true,obs_pt = "mean")
    pre_scale = x -> log1p.(proj_l(x))
    logn_scale = if obs_pt=="median"
       x -> issparse(x) ? norm_l(scaled_gdata(Matrix{Float32}(x),position_="median")) : norm_l(scaled_gdata(x,position_="median"))
