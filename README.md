@@ -1,6 +1,3 @@
-**Disclaimer:
-As the scLENS is based on the manuscript "scLENS: Data-driven signal detection for unbiased scRNA-seq data analysis," which is under review, this code is not the final version and will be modified during the review process. We will release the final code via GitHub once the manuscript is accepted. This code is only for reviewers.**
-
 # scLENS: Data-driven signal detection for unbiased scRNA-seq data analysis
 
 ## Table of Contents
