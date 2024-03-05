@@ -913,8 +913,8 @@ function main()
       delete!(dict_for_py,"λ")
       cell_arr = out_ours[:pca].cell
       ctype_arr = out_ours[:cell_id]
-      pdataf = pd.DataFrame(hcat(cell_arr,ctype_arr),columns=[:cell_id,:cell_type],index=1:length(ctype_arr))
-      pd.to_csv(pdataf,o_filename*"_cell_id.csv")
+      pdataf = DataFrame(:cell_id => cell_arr,:cell_type => ctype_arr)
+      CSV.write(o_filename*"_cell_id.csv",pdataf)
       pca_all = mat_(out_ours[:pca])
       pca_sub = mat_(out_ours[:pca_n1])
       dict_for_py["pca_n1"] = pca_sub
