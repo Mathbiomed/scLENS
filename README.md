@@ -120,7 +120,7 @@ To run scLENS, you can use the following options:
   **Default**: `julia`
   
   **Additional Details**:
-  1. **Seurat Dependency**: To use the saving options for 'seurat', `seurat` should be installed in your R environments respectively.
+  1. **Seurat Dependency**: To use the saving options for 'seurat', `seurat` should be installed in your R environments.
   2. **R Environment for Seurat**: The `R_HOME` environment variable for RCall.jl should point to the R home directory where `seurat` is installed. Refer to the [RCall.jl installation guide](https://juliainterop.github.io/RCall.jl/stable/installation/) for more details.
   
 - `arg1`: Provide the path to the input file, which should be a CSV or JLD2 file. The file must contain a matrix with rows representing cells and columns representing genes.  
