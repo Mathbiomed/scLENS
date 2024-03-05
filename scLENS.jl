@@ -666,7 +666,7 @@ function plot_embedding(inp, l_inp = nothing; title_ = "", xlabel_ = "UMAP 1", y
 
    inp1 = inp[:umap]
    label = if isnothing(l_inp)
-      inp[:cell_id]
+      ones(Int,size(inp1,1))
    else
       l_inp
    end
