@@ -58,7 +58,7 @@ This will install Julia and make it accessible from the command line.
 1. Navigate to the scLENS GitHub repository.
 2. Click on the `Code` button and download the ZIP file or clone the repository using git:
     ```bash
-    git clone https://github.com/yourusername/sclens.git
+    git clone https://github.com/Mathbiomed/scLENS.git
     ```
 
 ## Install Required Packages
