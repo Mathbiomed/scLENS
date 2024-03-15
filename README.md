@@ -35,7 +35,7 @@
     ```
 3. **Environment Path**: Add Julia to your PATH. (Please change the name of home folder)
     ```bash
-    echo 'export PATH="$PATH:/home/users/julia-1.10.1/bin"' >> ~/.bashrc
+    echo 'export PATH="$PATH:$HOME/julia-1.10.1/bin"' >> ~/.bashrc
     source ~/.bashrc
     ```
 This will install Julia and make it accessible from the command line.
@@ -130,7 +130,7 @@ To run scLENS, you can use the following options:
 Example usage:
 
 ```bash
-julia scLENS.jl data/sim_Tcell_3.csv.gz --true_label data/sim_Tcell_3_l.csv --out_dir out_dir --device cpu --out_type julia --plot
+julia scLENS.jl data/your_dataset.csv.gz --true_label data/your_labels.csv --out_dir out_dir --device cpu --out_type julia --plot
 ```
 **Note**: The time required for analysis using scLENS varies depending on the size of the dataset.
 
