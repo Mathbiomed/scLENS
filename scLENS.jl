@@ -263,9 +263,9 @@ function scLENS(inp_df;device_="gpu",th=60,l_inp=nothing,p_step=0.001,return_sca
    mean_cor = Array{Float32,1}([])
    println("Calculating sparsity level for the perturbation...")
    Vr2 = if N > M 
-       get_eigvec(logn_scale(pre_scale(nzero_idx))')[end]
+       get_eigvec(logn_scale(pre_scale(nzero_idx))',device=device_)[end]
    else
-       get_eigvec(logn_scale(pre_scale(nzero_idx)))[end]
+       get_eigvec(logn_scale(pre_scale(nzero_idx)),device=device_)[end]
    end
    n_2 = round(Int,lastindex(Vr2,2)/2)
    while true
