@@ -128,7 +128,7 @@ function df2sparr(inp_df)
          append!(b_, UInt32.(s.nzind))
          append!(c_, Float32.(s.nzval))
       end
-      sparse(b_,a_,c_)
+      sparse(b_,a_,c_,size(inp_df,1),size(inp_df,2)-1)
    else
       sparse(mat_(inp_df))
    end
