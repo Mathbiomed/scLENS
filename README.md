@@ -1,4 +1,12 @@
 # scLENS: Data-driven signal detection for unbiased scRNA-seq data analysis
+### Notice (Important)
+To prevent errors during the eigenvalue decomposition of large matrices, please downgrade CUDA.jl to version 5.2.0. 
+You can downgrade CUDA.jl by running the following command in your Julia environment:
+
+```julia
+import Pkg
+Pkg.add(Pkg.PackageSpec(name="CUDA", version="5.2.0"))
+```
 
 ## Table of Contents
 0. [System requirements](#system-requirements)
