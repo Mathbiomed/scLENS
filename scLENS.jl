@@ -34,7 +34,7 @@ sparsity_(A::SparseMatrixCSC) = 1-length(nonzeros(A))/length(A)
 sparsity_(A::Vector) = 1-sum(.!iszero.(A))/length(A)
 sparsity_(A::SparseVector) = 1-sum(.!iszero.(A))/length(A)
 sparsity_(A::DataFrame) = issparse(A[!,2]) ? 1-length(nonzeros(df2sparr(A)))/length(df2sparr(A)) : sparsity_(mat_(A))
-# tmp_df = ndf;min_tp_c=0;min_tp_g=0;max_tp_c=Inf;max_tp_g=Inf;min_genes_per_cell=200;max_genes_per_cell=0;min_cells_per_gene=15;mito_percent=5; ribo_percent=0
+# tmp_df = ndf;min_tp_c=0;min_tp_g=0;max_tp_c=Inf;max_tp_g=Inf;min_genes_per_cell=200;max_genes_per_cell=0;min_cells_per_gene=15;mito_percent=0; ribo_percent=0
 function preprocess(tmp_df;min_tp_c=0,min_tp_g=0,max_tp_c=Inf,max_tp_g=Inf,
    min_genes_per_cell=200,max_genes_per_cell=0,min_cells_per_gene=15,mito_percent=5,
    ribo_percent=0)
