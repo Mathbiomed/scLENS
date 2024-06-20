@@ -26,7 +26,6 @@ using Suppressor
 using NaNStatistics
 import Printf: @sprintf
 using Muon
-using RCall
 
 
 sparsity_(A::Matrix) = 1-length(nonzeros(SparseMatrixCSC(A)))/length(A)
@@ -285,14 +284,14 @@ function scLENS(inp_df;device_="gpu",th=60,l_inp=nothing,p_step=0.001,return_sca
            nanmaximum(abs.(corr_mat(Vr2,nV_2[:,end-n_2:end],device="cpu")),dims=1)[:]
        end
        
-       ppj_ = nanminimum(d_arr)
-       if (ppj_ < p_th) | (p_ < 0.9)
-           break
-       end
-      
-       p_ -= p_step
+       tmp_A = sort(d_arr) 
+       ppj_ = tmp_A[tmp_A .> 1e-3][1]
        println(ppj_)
        push!(mean_cor,ppj_)
+       if (ppj_ < p_th) | (p_ < 0.9)
+          break
+       end      
+       p_ -= p_step
    end
    println("Selected perturb sparisty: $p_")
    
@@ -766,14 +765,44 @@ function save_anndata(fn,pre_df,out_ours)
    writeh5ad(fn,adata)
 end
 
-function save_seuratobj(fn,inp_df,out_ours)
-   R"library(Seurat); tmp_df = as.sparse($(transpose_df(inp_df,:genes)[!,2:end]));rownames(tmp_df) <- $(names(inp_df)[2:end]);tmp_df;
-   seurat_mat = CollapseSpeciesExpressionMatrix(tmp_df);
-   seurat_obj = CreateSeuratObject(seurat_mat);
-   seurat_obj <- SetAssayData(seurat_obj,slot='scale.data',new.data=$(out_ours[:scaled_X]'),assay='RNA');
-   tmp_mat = as.matrix($(out_ours[:pca_n1][!,2:end]));rownames(tmp_mat) <- colnames(tmp_df);
-   seurat_obj[['pca']] <- CreateDimReducObject(embeddings = tmp_mat , key = 'PC_', assay = 'RNA')
-   saveRDS(seurat_obj, file=$fn)"
+global r_flag = true
+try
+   using RCall
+   if RCall.Rhome == ""
+      global r_flag = false
+  end 
+catch
+   global r_flag = false
+end
+
+if r_flag
+   seurat = rimport(Seurat)
+   r_asmatrix = RCall.reval("as.matrix")
+   r_asdframe = RCall.reval("as.data.frame")
+   r_save = RCall.reval("saveRDS")
+   r_rep_ = RCall.reval(" function(pbmc, sclens) {
+            pbmc[['sclens']] <- sclens
+            return(pbmc)
+            }")
+   function save_seuratobj(fn,inp_df,out_ours)
+      t_df = transpose_df(inp_df,:genes)[!,2:end];
+      rdf = seurat.as_sparse(t_df,var"row.names"=names(inp_df)[2:end]);
+      seurat_mat = seurat.CollapseSpeciesExpressionMatrix(rdf);
+      seurat_obj = seurat.CreateSeuratObject(seurat_mat);
+      seurat_obj = seurat.SetAssayData(seurat_obj,layer="scale.data",var"new.data"=out_ours[:scaled_X]',assay="RNA");
+      
+      row_names = rcopy(RCall.rcall(:colnames, rdf))
+      tmp_mat = r_asmatrix(r_asdframe(mat_(out_ours[:pca_n1]),var"row.names"=row_names));
+      dr_obj = seurat.CreateDimReducObject(embeddings = tmp_mat , key = "PC_", assay = seurat.DefaultAssay(seurat_obj))
+      seurat_obj = r_rep_(seurat_obj,dr_obj)
+      r_save(seurat_obj, file=fn)
+   end   
+else
+   function save_seuratobj(fn,inp_df,out_ours)
+      println("Warning: Please install R language and Seurat to use this option,\n jld2 file will be saved as outcome")
+      fn = replace(fn,".rds" => ".jld2")
+      jldsave(fn,Dict("data" => out_ours);compress=lz4())
+   end
 end
 
 function transpose_df(tmp_df,col1name=:cell)
@@ -853,7 +882,7 @@ function main()
 
    println("preprocessing...")
    pre_df,f_idx = preprocess(ndf,min_tp_c=0,min_tp_g=0,max_tp_c=Inf,max_tp_g=Inf,
-   min_genes_per_cell=200,max_genes_per_cell=0,min_cells_per_gene=15,mito_percent=5,
+   min_genes_per_cell=100,max_genes_per_cell=0,min_cells_per_gene=15,mito_percent=100,
    ribo_percent=0)
 
    true_lfile = parsed_args["true_label"]
@@ -927,12 +956,7 @@ function main()
       dict_for_py["lambda"] = out_ours[:λ]
       NPZ.npzwrite(o_filename*".npz",dict_for_py)
    elseif occursin("r", parsed_args["out_type"])
-      out_sclens = Dict(i => out_ours[Symbol(i)] for i in string.(collect(keys(out_ours))))
-      delete!(out_sclens,"umap_obj")
-      delete!(out_sclens,"λ")
-      out_sclens["lambda"] = out_ours[:λ]
-      @rput out_sclens
-      reval("save(file='$(o_filename).RData', out_sclens)")
+      save_seuratobj(o_filename*".rds",pre_df,out_ours)
    elseif occursin("seurat", lowercase(parsed_args["out_type"]))
       save_seuratobj(o_filename*".rds",pre_df,out_ours)
    elseif occursin("anndata", lowercase(parsed_args["out_type"]))
