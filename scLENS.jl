@@ -926,7 +926,7 @@ function main()
       println("saving all plots...")
       p1 = plot_mpdist(out_ours)
       p2 = plot_stability(out_ours)
-      p3 = plot_embedding(out_ours)
+      p3 = plot_embedding(out_ours,l_true)
 
       p1_name = o_filename*"-MPdist.png"
       p2_name = o_filename*"-Stability.png"
