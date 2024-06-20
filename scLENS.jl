@@ -776,7 +776,7 @@ catch
 end
 
 if r_flag
-   seurat = rimport(Seurat)
+   seurat = RCall.rimport("Seurat")
    r_asmatrix = RCall.reval("as.matrix")
    r_asdframe = RCall.reval("as.data.frame")
    r_save = RCall.reval("saveRDS")
