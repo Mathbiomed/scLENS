@@ -892,10 +892,10 @@ function main()
    elseif occursin("use1",true_lfile)
       pre_df.cell
    else
-      if occursin("jld2",test_file)
+      if occursin("jld2",true_lfile)
          l_true = jldload(true_lfile,"data")
          l_true[f_idx[1],end]
-      elseif occursin("csv",test_file)
+      elseif occursin("csv",true_lfile)
          l_true = CSV.read(true_lfile,DataFrame)[!,end]
          l_true[f_idx[1]]
       else
