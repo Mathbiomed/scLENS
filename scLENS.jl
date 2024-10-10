@@ -818,7 +818,7 @@ function extract_file(test_file)
    fname_base = splitext(split(test_file,"/")[end])[1]
    println(fname_base)
    ndf = if occursin("csv",test_file)
-      ndf = CSV.read(test_file,DataFrame)
+      ndf = CSV.read(test_file,DataFrame,buffer_in_memory=true)
       rename!(ndf,names(ndf)[1] => :cell)
       tmp_gname = change_gname(names(ndf)[2:end])
       rename!(ndf,["cell";tmp_gname],makeunique=true)
