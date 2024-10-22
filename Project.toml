@@ -25,4 +25,3 @@ UMAP = "c4f8c510-2410-5be4-91d7-4fbaeb39457e"
 
 [compat]
 Kaleido_jll = "0.1.0"
-Muon = "0.2.1"

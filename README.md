@@ -132,5 +132,3 @@ A function for saving results as a **Seurat object** will be available in a futu
 If you use scLENS in your research, please cite the following paper:
 
 **Kim, H., Chang, W., Chae, S.J. et al. scLENS: data-driven signal detection for unbiased scRNA-seq data analysis. Nat Commun 15, 3575 (2024). https://doi.org/10.1038/s41467-024-47884-3**
-
-For more detailed documentation, please refer to our [GitHub repository](https://github.com/Mathbiomed/scLENS/).
