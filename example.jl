@@ -32,6 +32,7 @@ panel_1 = scLENS.plot_embedding(sclens_embedding,pre_df.cell)
 
 # Save the PCA results to a CSV file
 using CSV
+using DataFrames
 CSV.write("out/pca.csv",sclens_embedding[:pca_n1])
 CSV.write("out/umap.csv",DataFrame(sclens_embedding[:umap],:auto)) # Save the UMAP results to a CSV file
 
