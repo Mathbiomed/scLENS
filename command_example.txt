@@ -1,5 +1,0 @@
-# julia scLENS.jl data/Z8eq.csv.gz -t data/Z8eq_l.csv -d out_dir --plot --device gpu -o seurat --scaling mean
-# julia scLENS.jl data/Z8eq.csv.gz -t data/Z8eq_l.csv -d out_dir --plot --device gpu -o anndata --scaling median
-# julia scLENS.jl data/Z8eq.csv.gz -t data/Z8eq_l.csv -d out_dir --plot --device cpu -o anndata --scaling median
-julia scLENS.jl data/Z8eq.csv.gz -t data/Z8eq_l.csv -d out_dir --plot --device cpu -o anndata
-
