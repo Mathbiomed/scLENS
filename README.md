@@ -33,6 +33,46 @@ To use CUDA, you must have an NVIDIA GPU with CUDA capability, and the appropria
 
 This will set up the required dependencies and activate the environment for the project.
 
+### Converting 10x Data in gz Format to JLD2
+
+If you have 10x data files in `gz` format and want to convert them to JLD2 format, you can use the `tenx2jld2` function. Follow the steps below:
+
+1. **Prepare the 10x Data**:
+   
+   Make sure your data folder contains the following files:
+   
+   - `matrix.mtx.gz`
+   - `features.tsv.gz`
+   - `barcodes.tsv.gz`
+
+2. **Convert the Data**:
+   
+   Use the `tenx2jld2` function to convert the 10x data into a JLD2 file:
+
+   ```julia
+   # Import necessary packages
+   using scLENS
+
+   # Example usage
+   scLENS.tenx2jld2("/path/to/10x/data", "output_data.jld2")
+   ```
+
+   This command will save the converted data as a JLD2 file in the specified output location. The default output is `out_jld2/out.jld2`.
+
+3. **Load the Converted Data**:
+   
+   To load the saved JLD2 data back into a DataFrame, use the following command:
+
+   ```julia
+   using JLD2
+
+   # Load the DataFrame
+   df = JLD2.load("output_data.jld2", "data")
+   ```
+
+   The `df` variable will now contain the DataFrame stored under the variable name `"data"`.
+
+
 ## Usage Example
 
 Below is an example of how to use the scLENS package, including data loading, quality control (QC), embedding creation, and saving the results.
