@@ -17,6 +17,8 @@ using PlotlyBase
 using PlotlyJS
 using Colors: red, green, blue
 using Muon
+using MatrixMarket
+using GZip
 
 function read_file(test_file::String;gid_file=nothing)
     fname_base = splitext(split(test_file,"/")[end])[1]
@@ -766,6 +768,48 @@ function save_anndata(fn,input)
     writeh5ad(fn,tmp_adata)
 end
  
+function tenx2jld2(p_dir,out_name="out_jld2/out.jld2",mode="gz")
+    if mode=="gz"
+        println("loading matrix file..")
+        M = try
+            tmp_f = joinpath(p_dir,"matrix.mtx.gz")
+            f_obj_ = GZip.open(tmp_f)
+            tmp_obj = readlines(f_obj_)
+            # n = length(tmp_obj)-2
+            a_tmp = [parse.(Int,split(s," ")) for s in tmp_obj[3:end]]
+            I = [s[1] for s in a_tmp[2:end]]
+            J = [s[2] for s in a_tmp[2:end]]
+            K = [s[3] for s in a_tmp[2:end]]
+            GZip.close(f_obj_)
+            sparse(I,J,K,a_tmp[1][1],a_tmp[1][2])
+        catch
+            mmread(joinpath(p_dir,"matrix.mtx"))
+        end
+        println("loading cell_id file..")
+        cells_ = try
+            values(CSV.read(joinpath((p_dir,"barcodes.tsv.gz")),DataFrame,header=false,buffer_in_memory=true)[!,1])
+        catch
+            values(CSV.read(joinpath((p_dir,"barcodes.tsv")),DataFrame,header=false)[!,1])
+        end
+        println("loading gene_id file..")
+        gene_ = try
+            values(CSV.read(joinpath(p_dir,"features.tsv.gz"),DataFrame,header=false,buffer_in_memory=true)[!,2])
+        catch
+            values(CSV.read(joinpath(p_dir,"features.tsv"),DataFrame,header=false)[!,2])
+        end
+        println("constructing DataFrame...")
+        ndf = DataFrame(M',gene_,makeunique=true)
+        insertcols!(ndf,1,:cell => cells_)
+        if !isdir(dirname(out_name))
+            mkdir(dirname(out_name))
+        end
+        println("Saving...")
+        jldsave(out_name,Dict("data" => ndf);compress=true)
+        println("JLD2 file has been successfully saved as: $out_name")
+    else
+        println("Currently, only 10x gz files are supported.")
+    end
+end
 
 end
 
