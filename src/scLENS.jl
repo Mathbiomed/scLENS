@@ -298,7 +298,7 @@ end
 
 function _get_eigen(Y;device="gpu")
     if device == "gpu"
-        tmp_L, tmp_V = CUDA.CUSOLVER.Xsyevd!('V','U',cu(Y))
+        tmp_L, tmp_V = CUDA.CUSOLVER.syevd!('V','U',cu(Y))
         tmp_L,tmp_V = Array{Float32,1}(tmp_L), Array{Float32,2}(tmp_V)
         if !isnothing(findfirst(isnan.(tmp_L)))
             tmp_L, tmp_V = eigen(convert.(Float64,Y))
