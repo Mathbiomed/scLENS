@@ -13,13 +13,47 @@ using NaNStatistics: histcounts, nanmaximum
 using UMAP:UMAP_
 using Distances:CosineDist
 using JLD2:save as jldsave, load as jldload
-using PlotlyBase
-using PlotlyJS
-using Colors: red, green, blue
+using CairoMakie
+using ColorSchemes
 using Muon
 using MatrixMarket
 using GZip
 
+
+"""
+The `read_file` function reads count matrix files in either CSV or JLD2 format.
+
+## Arguments
+- `test_file::String`: The path to the file containing data (CSV or JLD2 format). For CSV files, rows should represent cells and columns should represent genes. For JLD2 files, the file must contain a variable named `"data"`, which is a DataFrame.
+- `gid_file=nothing`: (optional) Path to a CSV file containing new gene names. If `gid_file=nothing`, gene names from the original data will not be modified.
+
+## File Formats
+- **CSV format**: Rows represent cells, and columns represent genes. The first row must contain gene names or IDs, and the first column must contain cell IDs.
+- **JLD2 format**: The file should contain a variable named `"data"` as a DataFrame. The first column in this DataFrame should be named `:cell` and must represent cell IDs.
+
+## Using a Gene Dictionary
+To change gene names, you can provide a second argument to the `scLENS.read_file` function as follows:
+
+```julia
+ndf = scLENS.read_file("data/Z8eq.csv.gz", gid_file="path/to/gene_id.csv")
+```
+
+The `gene_id_file` must be in **CSV format** and should contain two columns:
+- `"gene"`: Original gene names
+- `"gene_ID"`: Corresponding new gene names
+
+This file should follow the structure of the `gene_dictionary/gene_id.csv` file.
+
+## Example
+```julia
+# Load the compressed CSV file into a dataframe
+ndf = scLENS.read_file("data/Z8eq.csv.gz")
+
+# Alternatively, load with a gene dictionary
+ndf = scLENS.read_file("data/Z8eq.csv.gz", gid_file="gene_dictionary/gene_id.csv")
+```
+
+"""
 function read_file(test_file::String;gid_file=nothing)
     fname_base = splitext(split(test_file,"/")[end])[1]
     println(fname_base)
@@ -93,6 +127,36 @@ sparsity_(A::SparseMatrixCSC) = 1-length(nonzeros(A))/length(A)
 sparsity_(A::Vector) = 1-sum(.!iszero.(A))/length(A)
 sparsity_(A::SparseVector) = 1-sum(.!iszero.(A))/length(A)
 sparsity_(A::DataFrame) = issparse(A[!,2]) ? 1-length(nonzeros(df2sparr(A)))/length(df2sparr(A)) : sparsity_(mat_(A))
+"""
+`preprocess(tmp_df; min_tp_c=0, min_tp_g=0, max_tp_c=Inf, max_tp_g=Inf,
+    min_genes_per_cell=200, max_genes_per_cell=0, min_cells_per_gene=15, mito_percent=5.,
+    ribo_percent=0.)`
+
+The `preprocess` function filters and cleans a given count matrix DataFrame to retain high-quality cells and genes based on various criteria.
+
+## Arguments
+- `tmp_df`: A DataFrame where each row represents a cell, and each column (except the first) represents a gene. The first column contains cell IDs, and subsequent columns contain gene expression values.
+- `min_tp_c`: Minimum total counts per cell. Cells with fewer counts are filtered out.
+- `max_tp_c`: Maximum total counts per cell. Cells with counts exceeding this value are filtered out.
+- `min_tp_g`: Minimum total counts per gene. Genes with fewer counts are filtered out.
+- `max_tp_g`: Maximum total counts per gene. Genes with counts exceeding this value are filtered out.
+- `min_genes_per_cell`: Minimum number of genes per cell. Only cells with at least this number of expressed genes are retained.
+- `max_genes_per_cell`: Maximum number of genes per cell. Cells with more than this number of expressed genes are filtered out.
+- `min_cells_per_gene`: Minimum number of cells per gene. Only genes expressed in at least this number of cells are retained.
+- `mito_percent`: Upper threshold for mitochondrial gene expression as a percentage of total cell expression. Cells exceeding this threshold are filtered out.
+- `ribo_percent`: Upper threshold for ribosomal gene expression as a percentage of total cell expression. Cells exceeding this threshold are filtered out.
+
+## Example
+```julia
+# Basic preprocessing with default filtering parameters
+filtered_df = preprocess(tmp_df)
+
+# Advanced preprocessing with custom mitochondrial and ribosomal thresholds
+filtered_df = preprocess(tmp_df, mito_percent=10, ribo_percent=5)
+```
+
+This function is designed to improve data quality by filtering cells and genes that do not meet specified quality criteria, enabling more reliable downstream analyses.
+"""
 function preprocess(tmp_df;min_tp_c=0,min_tp_g=0,max_tp_c=Inf,max_tp_g=Inf,
     min_genes_per_cell=200,max_genes_per_cell=0,min_cells_per_gene=15,mito_percent=5.,
     ribo_percent=0.)
@@ -140,7 +204,7 @@ function preprocess(tmp_df;min_tp_c=0,min_tp_g=0,max_tp_c=Inf,max_tp_g=Inf,
     if ribo_percent == 0
         bidx_5 = ones(Bool,size(bidx_1))
     else
-        bidx_5 = sum(X[:,bidx_ribo],dims=2)[:]./sum(X,dims=2)[:] .> ribo_percent/100 #drop mito
+        bidx_5 = sum(X[:,bidx_ribo],dims=2)[:]./sum(X,dims=2)[:] .< ribo_percent/100 #drop mito
     end
 
     if max_genes_per_cell == 0
@@ -522,9 +586,55 @@ end
 
 proj_l = x -> issparse(x) ? spdiagm(1 ./sum(x,dims=2)[:]) * x : x ./ sum(x,dims=2)
 norm_l = x -> issparse(x) ? spdiagm(mean(sqrt.(sum(x.^2,dims=2)[:])) ./ sqrt.(sum(x.^2,dims=2)[:])) * x : x ./ sqrt.(sum(x.^2,dims=2)) * mean(sqrt.(sum(x.^2,dims=2)))
-function sclens(inp_df;device_="gpu",th=70,l_inp=nothing,p_step=0.001,return_scaled=true,n_perturb=20)
+"""
+`sclens(inp_df; device_="gpu", th=70, l_inp=nothing, p_step=0.001, return_scaled=true, n_perturb=20, centering="mean")`
+
+The `sclens` is a function for dimensionality reduction and noise filtering in scRNA-seq data, designed to detect biologically meaningful signals without extensive parameter tuning. 
+
+## Arguments
+- `device_`: Specifies the device to be used, either `"cpu"` or `"gpu"`. If `"gpu"` is not available, the function will automatically fall back to `"cpu"`. Note that using `"gpu"` requires an Nvidia graphics card and a compatible driver.
+- `th`: The threshold angle (in degrees) used in the signal robustness test. After perturbation, any changes in signal angle greater than this threshold are filtered out. Acceptable values range from 0 to 90. A value of 90 means no filtering, while 0 filters out all signals. Modifying this value is generally not recommended.
+- `p_step`: The decrement level for sparsity in the signal robustness test. Increasing `p_step` allows faster computation but reduces the accuracy of the signal robustness test.
+- `return_scaled`: If `true`, the output includes the fully preprocessed dataset (including L2-normalization) under the key `:scaled_df`.
+- `n_perturb`: Specifies the number of perturbations to perform during the signal robustness test. Increasing this value enhances the accuracy of the test but increases computation time.
+- `centering`: Determines whether to center the data on the mean or median during the z-score scaling in log normalization. Only `"mean"` and `"median"` are allowed.
+- `l_inp`: Optional input metadata for cells, such as an annotation. This is reflected in the output under the key `:cell_id`.
+
+## Output
+The function returns a dictionary containing the following keys:
+
+- `:pca`: A DataFrame containing the PC score matrix after applying Random Matrix Theory filtering, in a cell-by-PC format.
+- `:pca_n1`: A DataFrame of the PC score matrix after completing the signal robustness test, also in a cell-by-PC format.
+- `:L`: The eigenvalues of the data.
+- `:L_mp`: The noise eigenvalues.
+- `:λ`: The eigenvalue threshold obtained using Random Matrix Theory (RMT).
+- `:robustness_scores`: The robustness scores of each signal obtained after the signal robustness test, represented as a dictionary containing:
+    - `:m_scores`: Mean scores of each signal' robustness.
+    - `:sd_scores`: Standard deviation scores of each signal' robustness.
+- `:signal_ev`: The signal eigenvalues, distinguishing significant signals from noise.
+- `:signal_evec`: The signal eigenvector matrix.
+- `:cell_id`: Annotations for each cell as provided in the input.
+- `:scaled_df`: The fully preprocessed dataset.
+
+## Example
+```julia
+# Basic sclens run with default parameters
+result = sclens(inp_df)
+
+# Advanced run with a custom threshold and CPU as the device
+result = sclens(inp_df, device_="cpu", th=45, p_step=0.005)
+```
+"""
+function sclens(inp_df;device_="gpu",th=70,l_inp=nothing,p_step=0.001,return_scaled=true,n_perturb=20, centering="mean")
     pre_scale = x -> log1p.(proj_l(x))
-    logn_scale = x -> issparse(x) ? scaled_gdata(norm_l(scaled_gdata(Matrix{Float32}(x),position_="mean")),position_="cent") : scaled_gdata(norm_l(scaled_gdata(x,position_="mean")),position_="cent")
+    logn_scale = if centering == "mean"
+        x -> issparse(x) ? scaled_gdata(norm_l(scaled_gdata(Matrix{Float32}(x),position_="mean")),position_="cent") : scaled_gdata(norm_l(scaled_gdata(x,position_="mean")),position_="cent")
+    elseif centering == "median"
+        x -> issparse(x) ? norm_l(scaled_gdata(Matrix{Float32}(x),position_="median")) : norm_l(scaled_gdata(x,position_="median"))
+    else
+        println("Warning: The specified centering method is not supported in the current algorithm. scLENS will automatically use mean centering.")
+        x -> issparse(x) ? scaled_gdata(norm_l(scaled_gdata(Matrix{Float32}(x),position_="mean")),position_="cent") : scaled_gdata(norm_l(scaled_gdata(x,position_="mean")),position_="cent")
+    end
     
     println("Extracting matrices")
     X_ = df2sparr(inp_df)
@@ -570,7 +680,7 @@ function sclens(inp_df;device_="gpu",th=70,l_inp=nothing,p_step=0.001,return_sca
                 sparse(vcat(nz_row,z_idx1[sple_idx]),vcat(nz_col,z_idx2[sple_idx]),ones(Float32,length(nz_col)+length(sple_idx)),N,M))),device=device_)[end]
         end
         
-        d_arr = try
+        d_arr = try     
             nanmaximum(abs.(corr_mat(Vr2,nV_2[:,end-n_2:end],device=device_)),dims=1)[:]
         catch
             nanmaximum(abs.(corr_mat(Vr2,nV_2[:,end-n_2:end],device="cpu")),dims=1)[:]
@@ -662,7 +772,34 @@ function sclens(inp_df;device_="gpu",th=70,l_inp=nothing,p_step=0.001,return_sca
     end
 end
 
+"""
+`apply_umap!(input_dict; k=15, nc=2, md=0.1, metric=CosineDist())`
 
+The `apply_umap!` function applies UMAP (Uniform Manifold Approximation and Projection) to the results from `scLENS`, stored in `input_dict`, and adds the UMAP-transformed coordinates and graph object to `input_dict`.
+
+## Arguments
+- `input_dict`: The dictionary output from `scLENS`, containing the processed data to which UMAP will be applied.
+- `k`: Number of nearest neighbors considered for UMAP. This parameter influences how local relationships are preserved in the embedding.
+- `nc`: The number of output dimensions for UMAP, defining the dimensionality of the transformed space (e.g., 2 or 3 for visualization).
+- `md`: Minimum distance between points in the UMAP embedding. Smaller values will allow points to be closer together in the low-dimensional space, preserving more local detail.
+- `metric`: The distance metric used to measure cell-to-cell distances in the PCA space. While `CosineDist` is used by default, it is generally recommended not to change this metric for consistent results.
+
+## Output
+After executing this function:
+- `:umap` key in `input_dict` contains the UMAP-transformed coordinates.
+- `:umap_obj` key in `input_dict` contains the UMAP graph object with the underlying connectivity information.
+
+## Example
+```julia
+# Apply UMAP to the scLENS results with default parameters
+apply_umap!(input_dict)
+
+# Customize UMAP parameters, if needed
+apply_umap!(input_dict, k=10, nc=3, md=0.2)
+```
+
+This function integrates UMAP embeddings into the `scLENS` results, facilitating visualization and further analysis in the reduced-dimensional space.
+"""
 function apply_umap!(l_dict;k=15,nc=2,md=0.1,metric=CosineDist())
     pca_y = mat_(l_dict[:pca_n1])
     model = if size(pca_y,2) > nc
@@ -673,82 +810,6 @@ function apply_umap!(l_dict;k=15,nc=2,md=0.1,metric=CosineDist())
 
     l_dict[:umap] = Matrix(model.embedding')
     l_dict[:umap_obj]=model
-end
-
-function plot_embedding(inp,l_inp=nothing;title_="",xlabel_="UMAP 1", ylabel_="UMAP 2",marker_style="circle")
-    inp1 = if typeof(inp) <: Dict
-       inp[:umap]
-    elseif typeof(inp) <: Matrix
-       inp
-    end
- 
-    label = if typeof(inp) <: Dict
-       if isnothing(l_inp)
-          ones(size(inp[:umap],1))
-       else
-          l_inp
-       end
-    else
-       l_inp
-    end
-    
-    if isnothing(label)
-       plot(scatter(x=inp1[:,1],y=inp1[:,2],mode="markers"))
-    else
-       clist = PlotlyBase.colors.discrete[:tab20]
-       tmp_df1 = DataFrame(:x => inp1[:,1], :y => inp1[:,2], :type => label)
-       fig_1 = plot(tmp_df1,
-          x=:x, y=:y, color=:type,
-          marker=attr(size=5, sizemode="area",marker_symbol=marker_style),
-          mode="markers",Layout(title=title_,xaxis_title=xlabel_,yaxis_title=ylabel_,
-          template=templates.plotly_white, font=attr(family="Helvetica",size=18,weight="bold"),
-          yaxis=attr(showline=true, linewidth=2, linecolor="black",showticklabels=false,mirror=true),
-          xaxis=attr(showline=true, linewidth=2, linecolor="black",showticklabels=false,mirror=true),
-          xaxis_showgrid=false, yaxis_showgrid=false, xaxis_zeroline=false, yaxis_zeroline=false)
-       )
-       for i =1:size(unique(tmp_df1.type),1)
-          r = red(clist[mod(i,size(clist))+1])*255
-          g = green(clist[mod(i,size(clist))+1])*255
-          b = blue(clist[mod(i,size(clist))+1])*255
-          restyle!(fig_1,i,marker_color="rgba($r, $g, $b, 0.9)")
-       end
-       fig_1
-       return fig_1
-    end
-end
-
-function plot_mpdist(out_ours;dx=2000,bin_size=0.2,lw=2)
-    L = out_ours[:L]
-    L_mp = out_ours[:L_mp]
-    title="$(size(out_ours[:pca],2)-1) signals were detected"
-    x = LinRange(0, Int(round(maximum(L) + 0.5)), dx)
-    lmp_max = maximum(L_mp)
-    y = _mp_pdf(x, L_mp)
-    x_start = minimum(L)
-    x_end = maximum(L)
-    hs = histogram(x=L,histnorm="probability density",name="eigenvalues",xbins_start=x_start,xbins_end=x_end,xbins_size=bin_size,marker=attr(line=attr(color=:white,width=0.01)))
-    hs2 = histogram(x=L_mp,histnorm="probability density",opacity=1,name="eigenvalues between [a,b]",xbins_start=x_start,xbins_end=x_end,xbins_size=bin_size,marker=attr(color=:gray,line=attr(color=:white,width=0.01)))
-
-    ls = scatter(x=x[x .< lmp_max+0.5],y=y[x .< lmp_max+0.5],line=attr(width=lw,color="black"),mode="line",name="fitted MP dist. pdf")
-    p_ = plot([ls,hs,hs2],Layout(template=templates.plotly_white,title=title,
-    font=attr(family="Helvetica",size=18,weight="bold"),
-    yaxis=attr(showline=true, linewidth=2, linecolor="black",showticklabels=false,mirror=true),
-    xaxis=attr(showline=true, linewidth=2, linecolor="black",showticklabels=false,mirror=true,range=(0,maximum(L)+maximum(L)*0.2)),
-    xaxis_showgrid=false, yaxis_showgrid=false, xaxis_zeroline=false, yaxis_zeroline=false,
-    barmode="overlay",xaxis_title="Eigenvalue",yaxis_title="Probability density"))
-    p_
-end
-
-function plot_stability(l_dict)
-    title="$(length(l_dict[:sig_id])) robust signals were detected"
-    p_2 = plot(scatter(x=1:lastindex(l_dict[:robustness_scores][:m_scores]),y=l_dict[:robustness_scores][:m_scores],error_y=attr(array=l_dict[:robustness_scores][:sd_scores],color=:grey,opacity=0.5),
-    marker=attr(color=1 .-l_dict[:robustness_scores][:m_scores],colorscale=colors.RdBu,cmin=0,cmax=1,size=10),mode="markers"),
-    Layout(xaxis_title="nPC",yaxis_title="Stability",template=templates.plotly_white,title=title,
-    font=attr(family="Arial",size=18,weight="bold",color="black"),
-    yaxis=attr(ticks="outside",tickwidth=2,showline=true, linewidth=2, linecolor="black",mirror=true,range=(0.1,1.02),tickvals=collect(0.1:0.2:1)),
-    xaxis=attr(ticks="outside",tickwidth=2,showline=true, linewidth=2, linecolor="black",mirror=true),
-    ))
-    return p_2
 end
 
 function save_anndata(fn,input)
@@ -768,6 +829,38 @@ function save_anndata(fn,input)
     writeh5ad(fn,tmp_adata)
 end
  
+
+"""
+`tenx2jld2(p_dir, out_name="out_jld2/out.jld2", mode="gz")`
+
+The `tenx2jld2` function converts 10x Genomics data from compressed `gz` format to `JLD2` format, facilitating efficient storage and access within Julia.
+
+## Arguments
+- `p_dir`: Path to the directory containing the 10x data files. The directory should include the following files:
+  - `matrix.mtx.gz`
+  - `features.tsv.gz`
+  - `barcodes.tsv.gz`
+- `out_name`: The name of the output file, including the path where the converted data will be saved. The default location is `out_jld2/out.jld2`.
+- `mode`: Specifies the file format of the 10x data. Set to `"gz"` by default for compatibility with `.gz` compressed files.
+
+## Usage Example
+```julia
+# Convert 10x data from gz format to JLD2 format
+scLENS.tenx2jld2("/path/to/10x/data", "output_data.jld2")
+```
+
+## Loading the JLD2 Data
+Once the data has been converted, you can load it back into Julia as a DataFrame:
+
+```julia
+using JLD2
+
+# Load the DataFrame
+df = JLD2.load("output_data.jld2", "data")
+```
+
+The converted JLD2 file will contain the data under the variable name `"data"`, allowing for easy access and analysis within Julia.
+"""
 function tenx2jld2(p_dir,out_name="out_jld2/out.jld2",mode="gz")
     if mode=="gz"
         println("loading matrix file..")
@@ -809,6 +902,85 @@ function tenx2jld2(p_dir,out_name="out_jld2/out.jld2",mode="gz")
     else
         println("Currently, only 10x gz files are supported.")
     end
+end
+
+function plot_embedding(inp, l_inp = nothing)
+    xlabel_ = "UMAP 1"; ylabel_ = "UMAP 2";  title_ = ""
+    
+    CairoMakie.activate!()
+    
+    inp1 = inp[:umap]
+    label = if isnothing(l_inp)
+        inp[:cell_id]
+    else
+        l_inp
+    end
+
+    fig = Figure()
+    ax = Axis(fig[1, 1], title=title_, xlabel=xlabel_, ylabel=ylabel_, xgridvisible=false, ygridvisible=false)
+
+    if isnothing(label)
+        scatter!(ax, inp1[:, 1], inp1[:, 2])
+    else
+        tmp_df1 = DataFrame(x = inp1[:, 1], y = inp1[:, 2], type = label)
+        unique_labels = unique(tmp_df1.type)
+        # clist = distinguishable_colors(length(unique_labels))
+        clist = get(ColorSchemes.tab20,collect(LinRange(0,1,length(unique_labels))))
+        sc_list = []
+        for (i,ul) in enumerate(unique_labels)
+            indices = findall(tmp_df1.type .== ul)
+            push!(sc_list, scatter!(ax, tmp_df1.x[indices], tmp_df1.y[indices], color = clist[i], markersize = 5))
+        end
+        Legend(fig[1, 2],sc_list,unique_labels)
+    end
+
+    return fig
+end
+ 
+function plot_stability(l_dict)
+    CairoMakie.activate!()
+
+    m_scores = l_dict[:robustness_scores][:m_scores]
+    sd_scores = l_dict[:robustness_scores][:sd_scores]
+    nPC = 1:length(m_scores)  
+    color_map = CairoMakie.colormap("RdBu")
+
+    fig = Figure()
+    ax = Axis(fig[1, 1], xlabel="nPC", ylabel="Stability", title= "$(length(l_dict[:sig_id])) robust signals were detected")
+    scatter!(ax, nPC, m_scores, color = 1 .- m_scores, colormap=color_map, markersize = 10)
+    errorbars!(nPC, m_scores, sd_scores,
+    sd_scores, color = :grey,whiskerwidth=10)
+
+    return fig
+end
+ 
+function plot_mpdist(out_ours; dx = 2000)
+    L = out_ours[:L]
+    L_mp = out_ours[:L_mp]
+    x = LinRange(0, round(maximum(L) + 0.5), dx)
+    lmp_max = maximum(L_mp)
+    y = _mp_pdf(x, L_mp)  
+
+    CairoMakie.activate!()
+
+    fig = Figure()
+    ax = Axis(fig[1, 1],
+        xlabel = "Eigenvalue",
+        ylabel = "Probability density",
+        title = "$(size(out_ours[:pca],2)-1) signals were detected"
+    )
+
+    # Histogram for L
+    hista = hist!(ax, L, bins = 200, normalization = :pdf, color = :blue)
+    # Histogram for L_mp
+    histb = hist!(ax, L_mp, bins = 200, normalization = :pdf, color = :gray)
+    # Scatter plot for fitted MP distribution pdf
+    lin = lines!(ax, x[x .< lmp_max + 0.5], y[x .< lmp_max + 0.5], color = :black, linewidth=2)
+
+    Legend(fig[1, 2],
+    [hista, histb, lin],
+    ["eigenvalues", "eigenvalues between [a,b]", "fitted MP dist. pdf"])
+    return fig
 end
 
 end

@@ -40,5 +40,7 @@ CSV.write("out/umap.csv",DataFrame(sclens_embedding[:umap],:auto)) # Save the UM
 scLENS.save_anndata("out/test_data.h5ad",sclens_embedding)
 
 # the UMAP distribution as an image
-using PlotlyJS:savefig
-savefig(panel_1,"out/umap_dist.png")
+using CairoMakie
+CairoMakie.activate!(type = "png")
+save("out/umap_dist.png", panel_1)
+# savefig(panel_1,"out/umap_dist.png")
