@@ -893,7 +893,7 @@ function tenx2jld2(p_dir,out_name="out_jld2/out.jld2",mode="gz")
         println("constructing DataFrame...")
         ndf = DataFrame(M',gene_,makeunique=true)
         insertcols!(ndf,1,:cell => cells_)
-        if !isdir(dirname(out_name))
+        if !isdir(dirname(out_name)) & !isempty(dirname(out_name))
             mkdir(dirname(out_name))
         end
         println("Saving...")
