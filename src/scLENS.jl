@@ -931,7 +931,7 @@ function plot_embedding(inp, l_inp = nothing)
             indices = findall(tmp_df1.type .== ul)
             push!(sc_list, scatter!(ax, tmp_df1.x[indices], tmp_df1.y[indices], color = clist[i], markersize = 5))
         end
-        Legend(fig[1, 2],sc_list,unique_labels)
+        Legend(fig[1, 2],sc_list,string.(unique_labels))
     end
 
     return fig
