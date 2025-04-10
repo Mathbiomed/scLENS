@@ -329,7 +329,6 @@ function scaled_gdata(X;dim=1, position_="mean")
     end
 end
 
-
 function _wishart_matrix(X;device="gpu")
     if device == "gpu"
         gpu_x = CuMatrix{Float32}(X)
@@ -453,8 +452,6 @@ function _tw(L, L_mp)
     lambda_c = mean(L_mp) * (1 + sqrt(gamma))^2 + sigma
     return lambda_c, gamma, p, sigma
 end
-
-
 
 function mp_check(test_L,p_val = 0.05)
     bin_x = LinRange(minimum(test_L)-1,maximum(test_L)+1,100)
@@ -583,6 +580,16 @@ function get_sigev(X,Xr;device="gpu")
     end
 end
 
+function zscore_with_l2(X)
+    std_ = std(X,dims=1)[:]
+    X_norm = X * spdiagm(1. ./ std_)
+    mu = mean(X_norm, dims=1)
+
+    l2X = sqrt.(sum(X_norm.^2,dims=2)[:])
+    l2mu = norm(mu)
+    l2norm_ = sqrt.(l2X.^2 .- 2 .* (X_norm * mu')[:] .+ l2mu^2)
+    (Matrix(X_norm) .- mu) ./ (l2norm_ / mean(l2norm_))
+end
 
 proj_l = x -> issparse(x) ? spdiagm(1 ./sum(x,dims=2)[:]) * x : x ./ sum(x,dims=2)
 norm_l = x -> issparse(x) ? spdiagm(mean(sqrt.(sum(x.^2,dims=2)[:])) ./ sqrt.(sum(x.^2,dims=2)[:])) * x : x ./ sqrt.(sum(x.^2,dims=2)) * mean(sqrt.(sum(x.^2,dims=2)))
@@ -595,10 +602,8 @@ The `sclens` is a function for dimensionality reduction and noise filtering in s
 - `device_`: Specifies the device to be used, either `"cpu"` or `"gpu"`. If `"gpu"` is not available, the function will automatically fall back to `"cpu"`. Note that using `"gpu"` requires an Nvidia graphics card and a compatible driver.
 - `th`: The threshold angle (in degrees) used in the signal robustness test. After perturbation, any changes in signal angle greater than this threshold are filtered out. Acceptable values range from 0 to 90. A value of 90 means no filtering, while 0 filters out all signals. Modifying this value is generally not recommended.
 - `p_step`: The decrement level for sparsity in the signal robustness test. Increasing `p_step` allows faster computation but reduces the accuracy of the signal robustness test.
-- `return_scaled`: If `true`, the output includes the fully preprocessed dataset (including L2-normalization) under the key `:scaled_df`.
 - `n_perturb`: Specifies the number of perturbations to perform during the signal robustness test. Increasing this value enhances the accuracy of the test but increases computation time.
 - `centering`: Determines whether to center the data on the mean or median during the z-score scaling in log normalization. Only `"mean"` and `"median"` are allowed.
-- `l_inp`: Optional input metadata for cells, such as an annotation. This is reflected in the output under the key `:cell_id`.
 
 ## Output
 The function returns a dictionary containing the following keys:
@@ -613,8 +618,11 @@ The function returns a dictionary containing the following keys:
     - `:sd_scores`: Standard deviation scores of each signal' robustness.
 - `:signal_ev`: The signal eigenvalues, distinguishing significant signals from noise.
 - `:signal_evec`: The signal eigenvector matrix.
-- `:cell_id`: Annotations for each cell as provided in the input.
-- `:scaled_df`: The fully preprocessed dataset.
+- `:cell_id`: Barcodes
+- `:gene_id`: Gene ID.
+- `:sig_id` : indices for the robust signals.
+- `:gene_basis`: The signal eigenvector matrix (gene_basis).
+
 
 ## Example
 ```julia
@@ -625,30 +633,62 @@ result = sclens(inp_df)
 result = sclens(inp_df, device_="cpu", th=45, p_step=0.005)
 ```
 """
-function sclens(inp_df;device_="gpu",th=70,l_inp=nothing,p_step=0.001,return_scaled=true,n_perturb=20, centering="mean")
+function sclens(inp_df;device_="gpu",th=60,p_step=0.001,n_perturb=20,centering="mean")
     pre_scale = x -> log1p.(proj_l(x))
     logn_scale = if centering == "mean"
-        x -> issparse(x) ? scaled_gdata(norm_l(scaled_gdata(Matrix{Float32}(x),position_="mean")),position_="cent") : scaled_gdata(norm_l(scaled_gdata(x,position_="mean")),position_="cent")
+        x -> scaled_gdata(zscore_with_l2(x),position_="cent")
     elseif centering == "median"
         x -> issparse(x) ? norm_l(scaled_gdata(Matrix{Float32}(x),position_="median")) : norm_l(scaled_gdata(x,position_="median"))
     else
         println("Warning: The specified centering method is not supported in the current algorithm. scLENS will automatically use mean centering.")
         x -> issparse(x) ? scaled_gdata(norm_l(scaled_gdata(Matrix{Float32}(x),position_="mean")),position_="cent") : scaled_gdata(norm_l(scaled_gdata(x,position_="mean")),position_="cent")
     end
+
     
     println("Extracting matrices")
     X_ = df2sparr(inp_df)
-    
+
     nz_row, nz_col, nz_val = findnz(X_)
     nzero_idx = sparse(nz_row,nz_col,ones(Float32,length(nz_row)))
-    z_idx1,z_idx2,_ = findnz(iszero.(nzero_idx))
     N,M = size(X_)
-    scaled_X = logn_scale(pre_scale(X_))
+
+    z_idx1,z_idx2 = begin
+        sample_idx = [(i,j) for (i,j) in zip(rand(UInt32(1):UInt32(N),length(nz_val)),rand(UInt32(1):UInt32(M),length(nz_val)))]
+        z_idset = [(i,j) for (i,j) in zip(nz_row, nz_col)]
+        nzz_ = setdiff(sample_idx,z_idset)
+        [s[1] for s in nzz_], [s[2] for s in nzz_]    
+    end
+    GC.gc()
+
+    rec_vals = Dict{String,Union{VecOrMat{Float64}}}()
+    scaled_X = if centering == "mean"
+        rec_vals["TGC"] = Vector{Float64}(sum(X_,dims=2)[:])
+        n_mat = spdiagm(1 ./rec_vals["TGC"]) * X_
+
+        mat2 = log1p.(n_mat)
+        rec_vals["mat2_mean"] = mean(mat2,dims=1)
+        rec_vals["mat2_std"] = std(mat2,dims=1)
+
+        mat3_no = mat2 * spdiagm(1. ./ rec_vals["mat2_std"][:])
+        mup = mean(mat3_no, dims=1)
+
+        l2X = sqrt.(sum(mat3_no.^2,dims=2)[:])
+        l2mu = norm(mup)
+        l2norm_ = sqrt.(l2X.^2 .- 2 .* (mat3_no * mup')[:] .+ l2mu^2)
+        rec_vals["norm_tgc"] = l2norm_
     
+        mat4 = (Matrix(mat3_no) .- mup) ./ (rec_vals["norm_tgc"] / mean(rec_vals["norm_tgc"]))
+
+        rec_vals["cent_"] = mean(mat4,dims=1)
+        mat4 .- rec_vals["cent_"]
+    else
+        logn_scale(pre_scale(X_))
+    end
+
     X_r = df2sparr(random_nz(inp_df,rmix=true))
     println("Extracting Signals...")
     GC.gc()
-    nL, nV, L, L_mp, lambda_c, _ = get_sigev(scaled_X,logn_scale(pre_scale(X_r)),device=device_)
+    nL, nV, L, L_mp, lambda_c, _, noiseV = get_sigev(scaled_X,logn_scale(pre_scale(X_r)),device=device_)
  
     mpC_ = mp_check(L_mp)
     println("Calculating noise baseline...")
@@ -680,7 +720,7 @@ function sclens(inp_df;device_="gpu",th=70,l_inp=nothing,p_step=0.001,return_sca
                 sparse(vcat(nz_row,z_idx1[sple_idx]),vcat(nz_col,z_idx2[sple_idx]),ones(Float32,length(nz_col)+length(sple_idx)),N,M))),device=device_)[end]
         end
         
-        d_arr = try     
+        d_arr = try
             nanmaximum(abs.(corr_mat(Vr2,nV_2[:,end-n_2:end],device=device_)),dims=1)[:]
         catch
             nanmaximum(abs.(corr_mat(Vr2,nV_2[:,end-n_2:end],device="cpu")),dims=1)[:]
@@ -688,14 +728,13 @@ function sclens(inp_df;device_="gpu",th=70,l_inp=nothing,p_step=0.001,return_sca
         
         tmp_A = sort(d_arr)
         tank_ = hcat(tank_,tmp_A[1:5])
-
         ppj_ = if size(tank_,2) < tank_n
             tank_[2,:]
         else
             tank_[2,end-(tank_n-1):end]
         end
-        
         println(ppj_[end])
+
         if (sum(ppj_ .< p_th) > (tank_n-1)) | (p_ < 0.9)
             p_ += (tank_n-1)p_step
             break
@@ -710,15 +749,16 @@ function sclens(inp_df;device_="gpu",th=70,l_inp=nothing,p_step=0.001,return_sca
     nV_set = Matrix[]
     nL_set = Vector[]
     min_s = size(nV,2)
+    min_pc = Int(ceil(min_s*1.5))
     @showprogress "perturbing..." for _ in 1:n_perturb
         sple_idx = sample(UInt32(1):UInt32(lastindex(z_idx1)),Int(round((1-p_)*M*N)),replace=false)
         GC.gc()
         tmp_X = sparse(vcat(nz_row,z_idx1[sple_idx]),vcat(nz_col,z_idx2[sple_idx]),vcat(nz_val,ones(Float32,lastindex(sple_idx))),N,M)
         tmp_nL,tmp_nV = get_eigvec(logn_scale(pre_scale(tmp_X)),device=device_)
-        push!(nV_set, tmp_nV[:,1:min(min_s*2,size(tmp_nV,2))])
-        push!(nL_set, tmp_nL[1:min(min_s*2,size(tmp_nV,2))])
+        push!(nV_set, tmp_nV[:,1:min(min_pc,size(tmp_nV,2))])
+        push!(nL_set, tmp_nL[1:min(min_pc,size(tmp_nV,2))])
     end
- 
+
     if iszero(min_s)
         println("warning: There is no signal")
         results = Dict(:L => L, :L_mp => L_mp,
@@ -730,47 +770,49 @@ function sclens(inp_df;device_="gpu",th=70,l_inp=nothing,p_step=0.001,return_sca
         a_b = hcat([[s[2] for s in argmax(abs.(nV'*j),dims=2)] for j in nV_set]...)
 
         sub_nVset = [nV_set[s][:,a_b[:,s]] for s = 1:lastindex(nV_set)]
-        a_ = hcat([maximum(abs.(nV'*j),dims=2) for j in sub_nVset]...)
         b_vec = []
         for i = 1:n_perturb, j=i+1:n_perturb
             push!(b_vec,maximum(abs.(sub_nVset[i]'*sub_nVset[j]),dims=2)[:])
         end
         b_ = hcat(b_vec...)
-        pvalue_1 = sum(b_ .<= th_,dims=2)[:]./size(b_,2)
-        
-        m_score = mean(b_,dims=2)[:]
-        sd_score = std(b_,dims=2)[:]
-        pvals_ = pvalue_1
 
-        sig_id = findall(pvals_ .<= 0.01)
+        q1_val = mapslices(x->quantile(x,0.25), b_, dims=2)[:]
+        q3_val = mapslices(x->quantile(x,0.75), b_, dims=2)[:]
+        iqr_val = mapslices(iqr,b_,dims=2)[:]
+        filt_b_ = [b_[s,:][q1_val[s] - 1.5*iqr_val[s] .<= b_[s,:] .<= q3_val[s] + 1.5*iqr_val[s]] for s =1:length(iqr_val)]
+
+        m_score = median.(filt_b_)
+        sd_score = std.(filt_b_)
+        rob_score = m_score
+
+        sig_id = findall(rob_score .> th_)
         println("Number of filtered signal: $(size(sig_id,1))")
     
         println("Reconstructing reduced data...")
         Xout0 = nV.*(sqrt.(nL))'
         Xout1 = nV[:,sig_id].*sqrt.(nL[sig_id])'
+        
+        tmp_gmat = if device_ == "gpu"
+            tmp_X = CuArray{Float32,2}(undef, size(nV,2),size(scaled_X,2))
+            mul!(tmp_X,cu(nV'),cu(scaled_X))
+            sqrt.(nL).^-1 .* Matrix(tmp_X) ./ sqrt.(size(scaled_X,2))
+        else device_ == "cpu"
+            sqrt.(nL).^-1 .* nV'*scaled_X ./ sqrt.(size(scaled_X,2))
+        end
+        
         df_X0 = DataFrame(Xout0,:auto)
         insertcols!(df_X0,1,:cell => inp_df.cell)
         df_X1 = DataFrame(Xout1,:auto)
         insertcols!(df_X1,1,:cell => inp_df.cell)
-    
  
-        results = if return_scaled
-            scaled_df = DataFrame(scaled_X,names(inp_df)[2:end])
-            insertcols!(scaled_df,1,:cell=>inp_df.cell)
-            Dict(:pca => df_X0,:pca_n1 => df_X1, :sig_id=>sig_id, :L => L, :L_mp => L_mp,
-        :λ => lambda_c, :st_mat => a_, :robustness_scores => Dict(:b_ => b_,:pvalue => pvals_,:m_scores=>m_score, :sd_scores => sd_score), :signal_evec => nV, :signal_ev =>nL,
-        :cell_id => l_inp,:ppj => tank_, :scaled_df => scaled_df,
-        :ks_static => mpC_[:ks_static], :pass => mpC_[:pass])
-        else
-            Dict(:pca => df_X0,:pca_n1 => df_X1, :sig_id=>sig_id, :L => L, :L_mp => L_mp,
-        :λ => lambda_c, :st_mat => a_, :robustness_scores => Dict(:b_ => b_,:pvalue => pvals_,:m_scores=>m_score, :sd_scores => sd_score), :signal_evec => nV, :signal_ev =>nL,
-        :cell_id => l_inp,:ppj => tank_,
-        :ks_static => mpC_[:ks_static], :pass => mpC_[:pass])
-        end
-
+        results = Dict(:pca => df_X0,:pca_n1 => df_X1, :sig_id=>sig_id, :L => L, :L_mp => L_mp,
+        :λ => lambda_c, :robustness_scores => Dict(:b_ => b_,:rob_score => rob_score,:m_scores=>m_score, :sd_scores => sd_score), :signal_evec => nV, :signal_ev =>nL,
+        :cell_id => inp_df.cell, :gene_id => names(inp_df)[2:end], :gene_basis => tmp_gmat,
+        :pass => mpC_[:pass], :rec_vals => rec_vals)
         return results
     end
 end
+
 
 """
 `apply_umap!(input_dict; k=15, nc=2, md=0.1, metric=CosineDist())`
@@ -812,23 +854,106 @@ function apply_umap!(l_dict;k=15,nc=2,md=0.1,metric=CosineDist())
     l_dict[:umap_obj]=model
 end
 
-function save_anndata(fn,input)
-    tmp_adata = if haskey(input,:umap)
-        AnnData(X=Matrix{Float32}(input[:scaled_df][!,2:end]),
-        obs = DataFrame(:cell => input[:scaled_df].cell),
-        var = DataFrame(:gene => names(input[:scaled_df])[2:end]),
-        obsm=Dict("X_pca" => Matrix(input[:pca_n1][!,2:end]),"umap_sclens" => input[:umap])
-        )
+
+"""
+`get_denoised_df(inp_obj; device_="gpu")`
+
+Generates a denoised DataFrame using the robust signals detected by scLENS.
+
+## Arguments
+- `inp_obj`: The dictionary output from `scLENS`.
+- `device_`: Keyword argument specifying the computation device ("gpu" or "cpu"). Defaults to "gpu".
+
+## Output
+- A `DataFrame` containing the denoised dataset.
+"""
+function get_denoised_df(inp_obj;device_="gpu")
+    g_mat = inp_obj[:gene_basis][inp_obj[:sig_id],:]
+    Xout0 = Matrix{Float32}(inp_obj[:pca_n1][!,2:end])
+    d_mean = if device_ == "gpu"
+        if CUDA.has_cuda()
+            Xout = CuArray{Float32,2}(undef, size(Xout0,1),size(g_mat,2))
+            mul!(Xout,cu(Xout0),cu(g_mat))
+            Matrix{Float32}(Xout).* sqrt(size(inp_obj[:gene_basis],2))
+        else
+            println("Warning: CUDA is unavailable")
+            Xout = Array{Float32,2}(undef, size(Xout0,1),size(g_mat,2))
+            mul!(Xout,Xout0,g_mat)
+            Xout.* sqrt(size(inp_obj[:gene_basis],2))
+        end
+    elseif device_ == "cpu"
+        Xout = Array{Float32,2}(undef, size(Xout0,1),size(g_mat,2))
+        mul!(Xout,Xout0,g_mat)
+        Xout.* sqrt(size(inp_obj[:gene_basis],2))
     else
-        AnnData(X=Matrix{Float32}(input[:scaled_df][!,2:end]),
-        obs = DataFrame(:cell => input[:scaled_df].cell),
-        var = DataFrame(:gene => names(input[:scaled_df])[2:end]),
-        obsm=Dict("X_pca" => Matrix(input[:pca_n1][!,2:end]))
-        )
+        println("Warning: wrong device")
+        return nothing
+    end
+    
+    rec_vals = inp_obj[:rec_vals]
+    TGC = rec_vals["TGC"]
+    mat2_mean = rec_vals["mat2_mean"]
+    mat2_std = rec_vals["mat2_std"]
+    norm_tgc = rec_vals["norm_tgc"]
+    mean_ntgc = mean(norm_tgc)
+    cent_ = rec_vals["cent_"]
+
+    r_mat1 = d_mean .+ cent_
+    r_mat2 = r_mat1 .* (norm_tgc / mean_ntgc)
+    r_mat3 = (r_mat2 .* mat2_std) .+ mat2_mean
+    r_mat4 = (exp.(r_mat3) .- 1)
+    r_mat4[r_mat4 .< -0] .= 0
+    r_mat4 ./= sum(r_mat4,dims=2)
+    rcov_mean = r_mat4 .* mean(TGC)
+    odf = DataFrame(rcov_mean,inp_obj[:gene_id])
+    insertcols!(odf,1,:cell => inp_obj[:cell_id])
+    
+    odf
+end
+
+function save_anndata(fn,input;device_="gpu")
+    out_ldf = if haskey(input,:l_df)
+        input[:l_df]
+    else
+        DataFrame(:cell => input[:cell_id])
+    end
+    denoised_df = scLENS.get_denoised_df(input,device_=device_)
+
+    tmp_adata = if haskey(input,:umap)
+        if haskey(input,:ic)
+            AnnData(X=scLENS.mat_(denoised_df),
+            obs = out_ldf,
+            var = DataFrame(:gene => names(denoised_df)[2:end]),
+            obsm=Dict("X_pca" => Matrix(input[:pca_n1][!,2:end]),"X_umap" => input[:umap]),
+            obsp=Dict("connectivities" => input[:graph].weights),
+            uns=Dict("ic_stat" => input[:ic], "n_cluster" => input[:n_cluster])
+            )
+        else
+            AnnData(X=scLENS.mat_(denoised_df),
+            obs = out_ldf,
+            var = DataFrame(:gene => names(denoised_df)[2:end]),
+            obsm=Dict("X_pca" => Matrix(input[:pca_n1][!,2:end]),"X_umap" => input[:umap])
+            )
+        end
+    else
+        if haskey(input,:ic)
+            AnnData(X=scLENS.mat_(denoised_df),
+            obs = out_ldf,
+            var = DataFrame(:gene => names(denoised_df)[2:end]),
+            obsm=Dict("X_pca" => Matrix(input[:pca_n1][!,2:end])),
+            obsp=Dict("connectivities" => input[:graph].weights),
+            uns=Dict("ic_stat" => input[:ic], "n_cluster" => input[:n_cluster])
+            )
+        else
+            AnnData(X=scLENS.mat_(denoised_df),
+            obs = out_ldf,
+            var = DataFrame(:gene => names(denoised_df)[2:end]),
+            obsm=Dict("X_pca" => Matrix(input[:pca_n1][!,2:end]))
+            )
+        end
     end
     writeh5ad(fn,tmp_adata)
 end
- 
 
 """
 `tenx2jld2(p_dir, out_name="out_jld2/out.jld2", mode="gz")`
@@ -911,7 +1036,7 @@ function plot_embedding(inp, l_inp = nothing)
     
     inp1 = inp[:umap]
     label = if isnothing(l_inp)
-        inp[:cell_id]
+        ones(Int,length(inp[:cell_id]))
     else
         l_inp
     end
@@ -925,7 +1050,7 @@ function plot_embedding(inp, l_inp = nothing)
         tmp_df1 = DataFrame(x = inp1[:, 1], y = inp1[:, 2], type = label)
         unique_labels = unique(tmp_df1.type)
         # clist = distinguishable_colors(length(unique_labels))
-        clist = get(ColorSchemes.tab20,collect(LinRange(0,1,length(unique_labels))))
+        clist = get(ColorSchemes.tab20,collect(LinRange(0,1,max(2,length(unique_labels)))))
         sc_list = []
         for (i,ul) in enumerate(unique_labels)
             indices = findall(tmp_df1.type .== ul)
@@ -983,6 +1108,7 @@ function plot_mpdist(out_ours; dx = 2000)
     return fig
 end
 
+
 end
 
-# #############
+# #################
