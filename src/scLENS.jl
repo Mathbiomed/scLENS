@@ -710,7 +710,12 @@ function sclens(inp_df;device_="gpu",th=60,p_step=0.001,n_perturb=20,centering="
     tank_ = zeros(5,0)
     tank_n = 5
     while true
-        sple_idx = sample(UInt32(1):UInt32(lastindex(z_idx1)),Int(round((1-p_)*M*N)),replace=false)
+        nnzidx = Int(round((1-p_)*M*N))
+        if lastindex(z_idx1) .< nnzidx
+            p_ += p_step
+            break
+        end
+        sple_idx = sample(UInt32(1):UInt32(lastindex(z_idx1)),nnzidx,replace=false)
         GC.gc()
         nV_2 = if N > M
             get_eigvec(logn_scale(pre_scale(
