@@ -1,4 +1,5 @@
 # scLENS: Data-Driven Signal Detection for Unbiased scRNA-seq Data Analysis
+[![Python Version](https://img.shields.io/badge/Python-scLENSpy-blue?logo=python&logoColor=white)](https://github.com/Mathbiomed/scLENSpy)
 
 ## Introduction
 scLENS (Single-cell Low-dimension Embedding using effective Noise Subtraction) is a dimensionality reduction tool specifically developed to address the challenges of signal distortion and manual bias in scRNA-seq data analysis. By incorporating L2 normalization and leveraging random matrix theory (RMT) for noise filtering, scLENS automatically detects biologically meaningful signals without requiring time-consuming parameter tuning. It excels in analyzing highly sparse and variable scRNA-seq datasets, ensuring accurate downstream analysis results.
