@@ -12,6 +12,7 @@ To run this project, you will need the following:
 
 - **Julia** (version 1.6 or higher recommended)
 - **CUDA** for GPU processing (optional, if GPU support is required)
+
 *(For Python environment requirements, please refer to the [scLENSpy repository](https://github.com/Mathbiomed/scLENSpy).)*
 
 ### GPU Requirements for CUDA
