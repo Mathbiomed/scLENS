@@ -329,21 +329,34 @@ function scaled_gdata(X;dim=1, position_="mean")
     end
 end
 
-function _wishart_matrix(X;device="gpu")
+function _wishart_matrix(X;device="gpu",dims=1)
     if device == "gpu"
-        gpu_x = CuMatrix{Float32}(X)
-        out = CuArray{Float32,2}(undef, size(X,1),size(X,1))
-        mul!(out,gpu_x,gpu_x')
-        return Matrix(out) ./ size(X,2)
+        if dims==2
+            gpu_x = CuMatrix{Float32}(X)
+            out = CuArray{Float32,2}(undef, size(X,2),size(X,2))
+            mul!(out,gpu_x',gpu_x)
+            return Matrix(out) ./ size(X,2)
+        elseif dims==1
+            gpu_x = CuMatrix{Float32}(X)
+            out = CuArray{Float32,2}(undef, size(X,1),size(X,1))
+            mul!(out,gpu_x,gpu_x')
+            return Matrix(out) ./ size(X,2)
+        end
     elseif device == "cpu"
         X = if issparse(X)
             Matrix{eltype(X)}(X)
         else
             X
         end
-        out = Array{eltype(X),2}(undef, size(X,1),size(X,1))
-        mul!(out,X,X')
-        return out ./ size(X,2)
+        if dims == 2
+            out = Array{eltype(X),2}(undef, size(X,2),size(X,2))
+            mul!(out,X',X)
+            return out ./ size(X,2)
+        elseif dims==1
+            out = Array{eltype(X),2}(undef, size(X,1),size(X,1))
+            mul!(out,X,X')
+            return out ./ size(X,2)
+        end
     end
 end
 
@@ -476,7 +489,7 @@ end
 function get_eigvec(X;device="gpu")
     N, M = size(X)
     if N > M
-        Y = _wishart_matrix(X',device=device)
+        Y = _wishart_matrix(X,dims=2,device=device)
         ev_, V = _get_eigen(Y,device=device)
         L = ev_
         positive_idx = L .> 0
@@ -496,7 +509,7 @@ function get_eigvec(X;device="gpu")
 
         return nL, new_nVs
     else
-        Y = _wishart_matrix(X,device=device)
+        Y = _wishart_matrix(X,dims=1,device=device)
         ev_, V = _get_eigen(Y,device=device)
         L = ev_
         positive_idx = L .> 0
@@ -513,9 +526,9 @@ end
 function get_sigev(X,Xr;device="gpu")
     n,m = size(X)
     if n > m
-        Y = _wishart_matrix(X',device=device)
+        Y = _wishart_matrix(X,dims=2,device=device)
         ev_, V = _get_eigen(Y,device=device)
-        Yr = _wishart_matrix(Xr',device=device)
+        Yr = _wishart_matrix(Xr,dims=2,device=device)
         evr_, _ = _get_eigen(Yr,device=device)
 
         L = ev_
@@ -553,9 +566,9 @@ function get_sigev(X,Xr;device="gpu")
         return nL, new_nVs, L, L_mp, lambda_c, snL, new_noiseV
         
     else
-        Y = _wishart_matrix(X,device=device)
+        Y = _wishart_matrix(X,dims=1,device=device)
         ev_, V = _get_eigen(Y,device=device)
-        Yr = _wishart_matrix(Xr,device=device)
+        Yr = _wishart_matrix(Xr,dims=1,device=device)
         evr_, _ = _get_eigen(Yr,device=device)
         L = ev_
         Lr = evr_
