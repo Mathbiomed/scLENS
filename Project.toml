@@ -23,7 +23,3 @@ Random = "9a3f8284-a2c9-5f02-9a11-845980a1fd5c"
 SparseArrays = "2f01184e-e22b-5df5-ae63-d93ebab69eaf"
 StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
 UMAP = "c4f8c510-2410-5be4-91d7-4fbaeb39457e"
-
-[compat]
-CairoMakie = "0.12.15"
-ColorSchemes = "3.27.0"
