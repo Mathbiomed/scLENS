@@ -10,7 +10,7 @@ using Random:shuffle, shuffle!
 using LinearAlgebra
 using Distributions:Normal
 using NaNStatistics: histcounts, nanmaximum
-using UMAP:UMAP_
+using UMAP
 using Distances:CosineDist
 using JLD2:save as jldsave, load as jldload
 using CairoMakie
@@ -863,14 +863,15 @@ This function integrates UMAP embeddings into the `scLENS` results, facilitating
 function apply_umap!(l_dict;k=15,nc=2,md=0.1,metric=CosineDist())
     pca_y = mat_(l_dict[:pca_n1])
     model = if size(pca_y,2) > nc
-        UMAP_(pca_y',nc,metric=metric,n_neighbors=k,min_dist=md)
+        UMAP.fit(pca_y',nc,metric=metric,n_neighbors=k,min_dist=md)
     else
-        UMAP_(mat_(l_dict[:pca])[:,1:3]',metric=metric,n_neighbors=k,min_dist=md)
+        UMAP.fit(mat_(l_dict[:pca])[:,1:3]',metric=metric,n_neighbors=k,min_dist=md)
     end
 
-    l_dict[:umap] = Matrix(model.embedding')
+    l_dict[:umap] = Matrix(hcat(model.embedding...)')
     l_dict[:umap_obj]=model
 end
+
 
 
 """
