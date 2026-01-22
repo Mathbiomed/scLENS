@@ -215,7 +215,7 @@ function preprocess(tmp_df;min_tp_c=0,min_tp_g=0,max_tp_c=Inf,max_tp_g=Inf,
 
     fc_idx = bidx_1[:] .& bidx_2[:] .& bidx_3[:] .& bidx_4[:] .& bidx_5[:] .& bidx_6[:]
 
-    if any(fc_idx) && any(fc_idx)
+    if any(fc_idx) && any(fg_idx)
         oo_X = X[fc_idx,fg_idx]
         nn_idx = (sum(oo_X,dims=1) .!= 0)[:]
         oo_X = oo_X[:,nn_idx]
